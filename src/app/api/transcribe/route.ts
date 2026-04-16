@@ -22,14 +22,29 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log('[transcribe] received blob, size:', audioFile.size, 'type:', audioFile.type);
+    console.log('[transcribe] received blob, size:', audioFile.size, 'type:', audioFile.type, 'name:', audioFile.name);
 
-    // Forward to Groq Whisper
+    // Read the file into a buffer to ensure proper forwarding
+    const arrayBuffer = await audioFile.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    console.log('[transcribe] buffered audio, buffer size:', buffer.length);
+
+    // Determine file extension from mime type
+    const mimeType = audioFile.type || 'audio/webm';
+    let ext = 'webm';
+    if (mimeType.includes('mp4')) ext = 'mp4';
+    else if (mimeType.includes('ogg')) ext = 'ogg';
+
+    // Create fresh Blob from buffer for Groq
+    const audioBlob = new Blob([buffer], { type: mimeType });
+
     const groqForm = new FormData();
-    groqForm.append('file', audioFile, audioFile.name || 'audio.webm');
+    groqForm.append('file', audioBlob, `audio.${ext}`);
     groqForm.append('model', 'whisper-large-v3');
     groqForm.append('language', 'en');
     groqForm.append('response_format', 'verbose_json');
+
+    console.log('[transcribe] sending to Groq Whisper...');
 
     const groqResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
       method: 'POST',
@@ -39,10 +54,19 @@ export async function POST(request: Request) {
       body: groqForm,
     });
 
+    console.log('[transcribe] Groq response status:', groqResponse.status);
+
     if (!groqResponse.ok) {
-      const errBody = await groqResponse.json().catch(() => ({}));
-      const errMessage = (errBody as { error?: { message?: string } })?.error?.message || 'Transcription failed';
-      console.error('[transcribe] Groq error:', groqResponse.status, errMessage);
+      const errText = await groqResponse.text();
+      console.error('[transcribe] Groq error:', groqResponse.status, errText);
+
+      let errMessage = 'Transcription failed';
+      try {
+        const errBody = JSON.parse(errText);
+        errMessage = errBody?.error?.message || errMessage;
+      } catch {
+        errMessage = errText || errMessage;
+      }
 
       return Response.json(
         {
@@ -62,7 +86,7 @@ export async function POST(request: Request) {
   } catch (err) {
     console.error('[transcribe] unexpected error:', err);
     return Response.json(
-      { error: 'Internal server error', code: 'INTERNAL_ERROR' },
+      { error: `Internal server error: ${err instanceof Error ? err.message : String(err)}`, code: 'INTERNAL_ERROR' },
       { status: 500 }
     );
   }
