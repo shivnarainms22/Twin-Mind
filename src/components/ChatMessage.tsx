@@ -1,5 +1,6 @@
 'use client';
 
+import ReactMarkdown from 'react-markdown';
 import type { ChatMessage as ChatMessageType } from '@/types';
 
 interface ChatMessageProps {
@@ -28,7 +29,13 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           }
         `}
       >
-        {message.content}
+        {isUser ? (
+          message.content
+        ) : (
+          <div className="prose-chat">
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+          </div>
+        )}
         {message.isStreaming && (
           <span className="inline-block w-1.5 h-4 bg-accent ml-0.5 animate-pulse" />
         )}
