@@ -20,13 +20,6 @@ function getSupportedMimeType(): string {
   return '';
 }
 
-function getFileExtension(mimeType: string): string {
-  if (mimeType.includes('webm')) return 'webm';
-  if (mimeType.includes('mp4')) return 'mp4';
-  if (mimeType.includes('ogg')) return 'ogg';
-  return 'webm';
-}
-
 interface UseAudioRecorderOptions {
   onAudioChunk: (blob: Blob, mimeType: string) => void;
   onError: (error: string) => void;
@@ -37,53 +30,62 @@ export function useAudioRecorder({ onAudioChunk, onError }: UseAudioRecorderOpti
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeTypeRef = useRef<string>('');
+  // Use refs for callbacks to avoid stale closures in onstop handlers
+  const onAudioChunkRef = useRef(onAudioChunk);
+  const onErrorRef = useRef(onError);
+  onAudioChunkRef.current = onAudioChunk;
+  onErrorRef.current = onError;
+
+  const createAndStartRecorder = useCallback((stream: MediaStream) => {
+    const mimeType = mimeTypeRef.current;
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    mediaRecorderRef.current = recorder;
+    chunksRef.current = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        chunksRef.current.push(e.data);
+      }
+    };
+
+    recorder.onerror = () => {
+      console.error('[recorder] MediaRecorder error event');
+      onErrorRef.current('Recording error occurred');
+    };
+
+    recorder.start();
+    console.log('[recorder] recorder started, state:', recorder.state);
+  }, []);
 
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
-
-      const mimeType = getSupportedMimeType();
-      mimeTypeRef.current = mimeType;
-
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data);
-        }
-      };
-
-      recorder.onerror = () => {
-        console.error('[recorder] MediaRecorder error');
-        onError('Recording error occurred');
-      };
-
-      recorder.start();
-      console.log('[recorder] started recording');
+      mimeTypeRef.current = getSupportedMimeType();
+      createAndStartRecorder(stream);
     } catch (err) {
       const error = err as DOMException;
       console.error('[recorder] getUserMedia error:', error.name, error.message);
       if (error.name === 'NotAllowedError') {
-        onError('Microphone access denied. Please allow microphone access in your browser settings.');
+        onErrorRef.current('Microphone access denied. Please allow microphone access in your browser settings.');
       } else if (error.name === 'NotFoundError') {
-        onError('No microphone found. Please connect a microphone.');
+        onErrorRef.current('No microphone found. Please connect a microphone.');
       } else {
-        onError(`Microphone error: ${error.message}`);
+        onErrorRef.current(`Microphone error: ${error.message}`);
       }
     }
-  }, [onError]);
+  }, [createAndStartRecorder]);
 
   const flushAudio = useCallback((): Promise<void> => {
     return new Promise((resolve) => {
       const recorder = mediaRecorderRef.current;
       if (!recorder || recorder.state !== 'recording') {
+        console.warn('[recorder] flush skipped — recorder state:', recorder?.state || 'null');
         resolve();
         return;
       }
 
+      // Set the onstop handler BEFORE calling stop()
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, {
           type: mimeTypeRef.current || 'audio/webm',
@@ -91,48 +93,37 @@ export function useAudioRecorder({ onAudioChunk, onError }: UseAudioRecorderOpti
         chunksRef.current = [];
         console.log('[recorder] flushed audio, blob size:', blob.size, 'bytes');
 
+        // Send chunk for processing (async, non-blocking)
         if (blob.size > 1024) {
-          onAudioChunk(blob, mimeTypeRef.current || 'audio/webm');
+          onAudioChunkRef.current(blob, mimeTypeRef.current || 'audio/webm');
         } else {
-          console.log('[recorder] blob too small, skipping');
+          console.log('[recorder] blob too small (<1KB), skipping transcription');
         }
 
-        // Restart recording immediately
-        if (streamRef.current) {
-          const newRecorder = new MediaRecorder(
-            streamRef.current,
-            mimeTypeRef.current ? { mimeType: mimeTypeRef.current } : undefined
-          );
-          mediaRecorderRef.current = newRecorder;
-          newRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) {
-              chunksRef.current.push(e.data);
-            }
-          };
-          newRecorder.onerror = () => {
-            onError('Recording error occurred');
-          };
-          newRecorder.start();
-          console.log('[recorder] restarted recording');
+        // Restart recording immediately with fresh recorder
+        if (streamRef.current && streamRef.current.active) {
+          createAndStartRecorder(streamRef.current);
+        } else {
+          console.warn('[recorder] stream no longer active, cannot restart');
         }
+
         resolve();
       };
 
       recorder.stop();
     });
-  }, [onAudioChunk, onError]);
+  }, [createAndStartRecorder]);
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === 'recording') {
       recorder.onstop = () => {
-        // Final flush - send last chunk
         const blob = new Blob(chunksRef.current, {
           type: mimeTypeRef.current || 'audio/webm',
         });
         chunksRef.current = [];
         if (blob.size > 1024) {
-          onAudioChunk(blob, mimeTypeRef.current || 'audio/webm');
+          onAudioChunkRef.current(blob, mimeTypeRef.current || 'audio/webm');
         }
       };
       recorder.stop();
@@ -143,8 +134,8 @@ export function useAudioRecorder({ onAudioChunk, onError }: UseAudioRecorderOpti
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    console.log('[recorder] stopped recording');
-  }, [onAudioChunk]);
+    console.log('[recorder] stopped and cleaned up');
+  }, []);
 
   return { startRecording, stopRecording, flushAudio };
 }
