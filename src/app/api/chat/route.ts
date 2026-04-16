@@ -15,7 +15,7 @@ export async function POST(request: Request) {
 
     // Build system message with transcript context
     const systemContent = transcript
-      ? `${systemPrompt}\n\n## Conversation transcript (for context)\n${transcript}`
+      ? `${systemPrompt}\n\n## MEETING TRANSCRIPT (what people are saying in the live conversation — this is your primary source of truth)\n${transcript}`
       : systemPrompt;
 
     console.log('[chat] sending message, transcript context:', transcript?.length || 0, 'chars, messages:', messages.length);
