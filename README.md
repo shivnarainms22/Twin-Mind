@@ -4,7 +4,7 @@ A real-time AI meeting copilot that listens to your microphone, transcribes spee
 
 ## Live Demo
 
-> **[Deployed URL will be added after Vercel deployment]**
+> **Live demo:** https://twin-mind-pink.vercel.app/
 
 ## Setup
 
